@@ -84,6 +84,7 @@ mongoc_cleanup (void)
    mongoc_once (&once, _mongoc_do_cleanup);
 }
 
+#if 0
 /*
  * On GCC, just use __attribute__((constructor)) to perform initialization
  * automatically for the application.
@@ -102,4 +103,5 @@ _mongoc_init_dtor (void)
 {
    mongoc_cleanup ();
 }
+#endif
 #endif
