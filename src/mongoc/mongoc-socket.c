@@ -27,11 +27,24 @@
 #undef MONGOC_LOG_DOMAIN
 #define MONGOC_LOG_DOMAIN "socket"
 
+#ifdef _WIN32
+    #define EVENTS_IN       (FD_READ | FD_OOB | FD_CLOSE)
+    #define EVENTS_ACCEPT   (FD_ACCEPT | FD_CLOSE)
+    #define EVENTS_CONNECT  (FD_CONNECT)
+    #define EVENTS_OUT      (FD_WRITE | FD_CLOSE)
+#else // !_WIN32
+    #define EVENTS_IN       (POLLIN)
+    #define EVENTS_ACCEPT   (POLLIN)
+    #define EVENTS_CONNECT  (POLLOUT)
+    #define EVENTS_OUT      (POLLOUT)
+#endif // _WIN32
+
 
 struct _mongoc_socket_t
 {
 #ifdef _WIN32
    SOCKET sd;
+   WSAEVENT event;
 #else
    int sd;
 #endif
@@ -104,17 +117,14 @@ _mongoc_socket_setnonblock (int sd)
  */
 
 static bool
-#ifdef _WIN32
-_mongoc_socket_wait (SOCKET   sd,           /* IN */
-#else
-_mongoc_socket_wait (int      sd,           /* IN */
-#endif
-                     int      events,       /* IN */
-                     int64_t  expire_at)    /* IN */
+_mongoc_socket_wait (mongoc_socket_t*   socket,           /* IN */
+                     int                events,       /* IN */
+                     int64_t            expire_at)    /* IN */
 {
 #ifdef _WIN32
-   WSAPOLLFD pfd;
+   SOCKET sd = socket->sd;
 #else
+   int sd = socket->sd;
    struct pollfd pfd;
 #endif
    int ret;
@@ -135,27 +145,36 @@ _mongoc_socket_wait (int      sd,           /* IN */
       }
    }
 
-   pfd.fd = sd;
 #ifdef _WIN32
-   pfd.events = events;
-#else
-   pfd.events = events | POLLERR | POLLHUP;
-#endif
-   pfd.revents = 0;
-
-#ifdef _WIN32
-   ret = WSAPoll (&pfd, 1, timeout);
-   if (ret == SOCKET_ERROR) {
-      MONGOC_WARNING ("WSAGetLastError(): %d", WSAGetLastError ());
-      ret = false;
+   // DO SETUP in create
+   if ((socket->event != WSA_INVALID_EVENT) && (WSAEventSelect(sd, socket->event, events) != SOCKET_ERROR) && (WSAEventSelect(sd, socket->event, events) != SOCKET_ERROR)) {
+      timeout = (timeout == 0) ? WSA_INFINITE : timeout;
+      switch (WSAWaitForMultipleEvents(1, &socket->event, true, timeout, false)) {
+      case WSA_WAIT_EVENT_0:
+         WSAResetEvent(socket->event);
+         ret = 1;
+         break;
+      case WSA_WAIT_TIMEOUT:
+         ret = 0;
+         break;
+      default:
+         ret = -1;
+         break;
+      }
+   }
+   else {
+      ret = -1;
    }
 #else
+   pfd.fd = sd;
+   pfd.events = events | POLLERR | POLLHUP;
+   pfd.revents = 0;
    ret = poll (&pfd, 1, timeout);
 #endif
 
    if (ret > 0) {
 #ifdef _WIN32
-      RETURN (0 != (pfd.revents & (events | POLLHUP | POLLERR)));
+      RETURN (true);
 #else
       RETURN (0 != (pfd.revents & events));
 #endif
@@ -321,7 +340,7 @@ again:
    try_again = (failed && _mongoc_socket_errno_is_again (sock));
 
    if (failed && try_again) {
-      if (_mongoc_socket_wait (sock->sd, POLLIN, expire_at)) {
+      if (_mongoc_socket_wait (sock, EVENTS_ACCEPT, expire_at)) {
          GOTO (again);
       }
       RETURN (NULL);
@@ -418,6 +437,15 @@ mongoc_socket_close (mongoc_socket_t *sock) /* IN */
       shutdown (sock->sd, SD_BOTH);
       ret = closesocket (sock->sd);
    }
+   if (sock->event != WSA_INVALID_EVENT) {
+      if (WSACloseEvent(sock->event)) {
+         sock->event = WSA_INVALID_EVENT;
+         ret = 0;
+      }
+      else {
+         ret = -1;
+      }
+   }
 #else
    if (sock->sd != -1) {
       shutdown (sock->sd, SHUT_RDWR);
@@ -489,7 +517,7 @@ mongoc_socket_connect (mongoc_socket_t       *sock,      /* IN */
    }
 
    if (failed && try_again) {
-      if (_mongoc_socket_wait (sock->sd, POLLOUT, expire_at)) {
+      if (_mongoc_socket_wait (sock, EVENTS_CONNECT, expire_at)) {
          optval = -1;
          ret = getsockopt (sock->sd, SOL_SOCKET, SO_ERROR,
                            (char *)&optval, &optlen);
@@ -602,6 +630,7 @@ mongoc_socket_new (int domain,   /* IN */
    mongoc_socket_t *sock;
 #ifdef _WIN32
    SOCKET sd;
+   WSAEVENT event;
 #else
    int sd;
 #endif
@@ -626,9 +655,19 @@ mongoc_socket_new (int domain,   /* IN */
       MONGOC_WARNING ("Failed to enable TCP_NODELAY.");
    }
 
+#ifdef _WIN32
+   event = WSACreateEvent();
+   if (event == WSA_INVALID_EVENT) {
+      GOTO (fail);
+   }
+#endif
+
    sock = bson_malloc0 (sizeof *sock);
    sock->sd = sd;
    sock->domain = domain;
+#ifdef _WIN32
+   sock->event = event;
+#endif
 
    RETURN (sock);
 
@@ -696,7 +735,7 @@ again:
    try_again = (failed && _mongoc_socket_errno_is_again (sock));
 
    if (failed && try_again) {
-      if (_mongoc_socket_wait (sock->sd, POLLIN, expire_at)) {
+      if (_mongoc_socket_wait (sock, EVENTS_IN, expire_at)) {
          GOTO (again);
       }
    }
@@ -1018,7 +1057,7 @@ mongoc_socket_sendv (mongoc_socket_t  *sock,      /* IN */
       /*
        * Block on poll() until our desired condition is met.
        */
-      if (!_mongoc_socket_wait (sock->sd, POLLOUT, expire_at)) {
+      if (!_mongoc_socket_wait (sock, EVENTS_OUT, expire_at)) {
          if (ret == 0){
 #ifdef _WIN32
             errno = WSAETIMEDOUT;
@@ -1082,7 +1121,7 @@ mongoc_socket_check_closed (mongoc_socket_t *sock) /* IN */
    char buf [1];
    ssize_t r;
 
-   if (_mongoc_socket_wait (sock->sd, POLLIN, 0)) {
+   if (_mongoc_socket_wait (sock->sd, EVENTS_IN, 0)) {
       sock->errno_ = 0;
 
       r = recv (sock->sd, buf, 1, MSG_PEEK);

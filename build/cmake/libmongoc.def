@@ -142,6 +142,7 @@ mongoc_index_opt_wt_get_default
 mongoc_index_opt_wt_init
 mongoc_init
 mongoc_log
+mongoc_log_init_mutex
 mongoc_log_default_handler
 mongoc_log_level_str
 mongoc_log_set_handler

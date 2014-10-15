@@ -52,6 +52,9 @@ typedef enum
 } mongoc_log_level_t;
 
 
+// Init the global mutex
+void mongoc_log_init_mutex();
+
 /**
  * mongoc_log_func_t:
  * @log_level: The level of the log message.

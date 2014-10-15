@@ -27,6 +27,64 @@
 #endif
 #include "mongoc-thread-private.h"
 
+#ifdef _WIN32
+
+BOOL default_sleep_condvar(PCONDITION_VARIABLE c, PCRITICAL_SECTION m, DWORD t)
+{
+   if (!gWindowsSleepCondVarCS) {
+      gWindowsSleepCondVarCS = (win32_sleep_condvar_func_t)GetProcAddress(GetModuleHandle("kernel32.dll"),"SleepConditionVariableCS");
+   }
+   return gWindowsSleepCondVarCS(c, m, t);
+}
+
+BOOL default_init_condvar(PCONDITION_VARIABLE c)
+{
+   if (!gWindowsInitCondVar) {
+      gWindowsInitCondVar = (win32_init_condvar_func_t)GetProcAddress(GetModuleHandle("kernel32.dll"),"InitializeConditionVariable");
+   }
+   return gWindowsInitCondVar(c);
+}
+
+BOOL default_wake_condvar(PCONDITION_VARIABLE c)
+{
+   if (!gWindowsWakeCondVar) {
+      gWindowsWakeCondVar = (win32_wake_condvar_func_t)GetProcAddress(GetModuleHandle("kernel32.dll"),"WakeConditionVariable");
+   }
+   return gWindowsWakeCondVar(c);
+}
+
+win32_sleep_condvar_func_t gWindowsSleepCondVarCS = NULL;
+win32_init_condvar_func_t gWindowsInitCondVar = NULL;
+win32_wake_condvar_func_t gWindowsWakeCondVar = NULL;
+
+void
+mongoc_init (void)
+{
+#ifdef MONGOC_ENABLE_SSL
+   _mongoc_ssl_init();
+#endif
+   bson_context_init_default();
+   _mongoc_counters_init();
+   
+   {
+      WORD wVersionRequested;
+      WSADATA wsaData;
+      int err;
+
+      wVersionRequested = MAKEWORD (2, 2);
+
+      err = WSAStartup (wVersionRequested, &wsaData);
+
+      /* check the version perhaps? */
+
+      assert (err == 0);
+
+      atexit ((void(*)(void))WSACleanup);
+   }
+}
+
+#else
+
 static MONGOC_ONCE_FUN( _mongoc_do_init)
 {
 #ifdef MONGOC_ENABLE_SSL
@@ -52,6 +110,7 @@ static MONGOC_ONCE_FUN( _mongoc_do_init)
 
       atexit ((void(*)(void))WSACleanup);
    }
+
 #endif
 
    MONGOC_ONCE_RETURN;
@@ -64,14 +123,27 @@ mongoc_init (void)
    mongoc_once (&once, _mongoc_do_init);
 }
 
-static MONGOC_ONCE_FUN( _mongoc_do_cleanup)
+#endif
+
+#ifdef _WIN32
+
+void
+mongoc_cleanup (void)
 {
+   // TODO: make sure it is only called once
 #ifdef MONGOC_ENABLE_SSL
    _mongoc_ssl_cleanup();
 #endif
 
-#ifdef _WIN32
    WSACleanup ();
+}
+
+#else
+
+static MONGOC_ONCE_FUN( _mongoc_do_cleanup)
+{
+#ifdef MONGOC_ENABLE_SSL
+   _mongoc_ssl_cleanup();
 #endif
 
    MONGOC_ONCE_RETURN;
@@ -83,6 +155,8 @@ mongoc_cleanup (void)
    static mongoc_once_t once = MONGOC_ONCE_INIT;
    mongoc_once (&once, _mongoc_do_cleanup);
 }
+
+#endif
 
 /*
  * On GCC, just use __attribute__((constructor)) to perform initialization

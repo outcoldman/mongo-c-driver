@@ -186,6 +186,14 @@ _mongoc_ssl_hostcheck (const char *pattern,
                        suffixlen) == 0;
 }
 
+INT WSAAPI InetPton(
+  _In_   INT  Family,
+  _In_   PCTSTR pszAddrString,
+  _Out_  PVOID pAddrBuf
+);
+
+typedef INT (*inet_pton_func_t)(INT, PCTSTR, PVOID);
+static inet_pton_func_t gWindowsInetPton = NULL;
 
 /** check if a provided cert matches a passed hostname
  */
@@ -219,9 +227,13 @@ _mongoc_ssl_check_cert (SSL        *ssl,
       return true;
    }
 
+   if (!gWindowsInetPton) {
+      gWindowsInetPton = (inet_pton_func_t)GetProcAddress(GetModuleHandle("kernel32.dll"),"inet_pton");
+   }
+
    /** if the host looks like an IP address, match that, otherwise we assume we
     * have a DNS name */
-   if (inet_pton (AF_INET, host, &addr)) {
+   if (gWindowsInetPton (AF_INET, host, &addr)) {
       target = GEN_IPADD;
       addrlen = sizeof (struct in_addr);
    }
@@ -394,11 +406,6 @@ SSL_CTX *
 _mongoc_ssl_ctx_new (mongoc_ssl_opt_t *opt)
 {
    SSL_CTX *ctx = NULL;
-
-   /*
-    * Ensure we are initialized. This is safe to call multiple times.
-    */
-   mongoc_init ();
 
    ctx = SSL_CTX_new (SSLv23_method ());
 

@@ -52,6 +52,19 @@
 #  define MONGOC_ONCE_INIT              PTHREAD_ONCE_INIT
 # endif
 #else
+
+typedef BOOL (*win32_sleep_condvar_func_t)(PCONDITION_VARIABLE, PCRITICAL_SECTION, DWORD);
+typedef BOOL (*win32_init_condvar_func_t)(PCONDITION_VARIABLE);
+typedef BOOL (*win32_wake_condvar_func_t)(PCONDITION_VARIABLE);
+
+extern win32_sleep_condvar_func_t gWindowsSleepCondVarCS;
+extern win32_init_condvar_func_t gWindowsInitCondVar;
+extern win32_wake_condvar_func_t gWindowsWakeCondVar;
+
+extern BOOL default_sleep_condvar(PCONDITION_VARIABLE c, PCRITICAL_SECTION m, DWORD t);
+extern BOOL default_init_condvar(PCONDITION_VARIABLE c);
+extern BOOL default_wake_condvar(PCONDITION_VARIABLE c);
+
 # define mongoc_thread_t                HANDLE
 static BSON_INLINE int
 mongoc_thread_create (mongoc_thread_t *thread,
@@ -68,9 +81,9 @@ mongoc_thread_create (mongoc_thread_t *thread,
 # define mongoc_mutex_unlock            LeaveCriticalSection
 # define mongoc_mutex_destroy           DeleteCriticalSection
 # define mongoc_cond_t                  CONDITION_VARIABLE
-# define mongoc_cond_init               InitializeConditionVariable
-# define mongoc_cond_wait(_c, _m)       SleepConditionVariableCS((_c), (_m), INFINITE)
-# define mongoc_cond_signal             WakeConditionVariable
+# define mongoc_cond_init               default_init_condvar
+# define mongoc_cond_wait(_c, _m)       default_sleep_condvar((_c), (_m), INFINITE)
+# define mongoc_cond_signal             default_wake_condvar
 static BSON_INLINE int
 mongoc_cond_destroy (mongoc_cond_t *_ignored)
 {
